@@ -20,7 +20,7 @@ func main() {
 
 	// Open websocket server
 	//connections := sync.Map{}
-	http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	err = http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w, nil)
 		if err != nil {
 			fmt.Println(err)
@@ -70,4 +70,5 @@ func main() {
 		}()
 	}))
 
+	fmt.Println("Error starting web server: %s", err)
 }
