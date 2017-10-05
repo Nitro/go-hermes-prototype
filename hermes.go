@@ -23,7 +23,6 @@ func main() {
 	log.Infof("Connected to NATS server")
 
 	// Open websocket server
-	//connections := sync.Map{}
 	err = http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w, nil)
 		if err != nil {
@@ -56,27 +55,27 @@ func main() {
 				errNew := wsutil.WriteServerMessage(conn, ws.OpText, m.Data)
 				if errNew != nil {
 					log.Errorf("failed Write to ws", errNew)
-					conn.Close()
 					closeChan <- struct{}{}
 					return
 				}
 
-				timer = time.NewTimer(inactivityTimeout)
+				timer.Reset(inactivityTimeout)
 			})
 			if err != nil {
 				log.Errorf("failed NATS subscribe", err)
 				return
 			}
 
+			// Async unsubscribe and close websocket
 			go func() {
 				select {
 				case <-timer.C:
 					log.Infof("Websocket timeout, unsubscribing: %s", channel)
-					subscription.Unsubscribe()
 				case <-closeChan:
 					log.Infof("Websocket closed, unsubscribing: %s", channel)
-					subscription.Unsubscribe()
 				}
+				subscription.Unsubscribe()
+				conn.Close()
 			}()
 		}()
 	}))
