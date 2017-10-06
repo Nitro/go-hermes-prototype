@@ -169,7 +169,7 @@ func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 			// Send the received message to the corresponding websocket client
 			errNew := wsb.WriteServerMessage(ws.OpText, m.Data)
 			if errNew != nil {
-				log.Errorf("failed to write to Websocket", errNew)
+				log.Errorf("Failed to write to Websocket", errNew)
 				closeChan <- struct{}{}
 				return
 			}
@@ -177,7 +177,7 @@ func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 			timer.Reset(h.websocketTimeout)
 		})
 		if err != nil {
-			wsb.WriteError(fmt.Sprintf("failed NATS subscription on subject '%s': %s", subj, err))
+			wsb.WriteError(fmt.Sprintf("Failed NATS subscription on subject '%s': %s", subj, err))
 			return
 		}
 
