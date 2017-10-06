@@ -14,3 +14,5 @@ A NATS server has to run first for Hermes to work. Hermes uses NATS to handle th
 Hermes exposes an HTTP server that serves two routes:
 - `/subscribe` - clients can use it to initiate a websocket connection via HTTP GET and request subscription to mesages with a given "subject"
 - `/publish` - backend services can send messages to it via HTTP POST requests, which contain a query parameter `subj` that specifies the NATS "subject". Subsequently, Hermes will broadcast the received message to the clients that are subscribed to this "subject"
+
+![Hermes Architecture](resources/architecture.svg)
