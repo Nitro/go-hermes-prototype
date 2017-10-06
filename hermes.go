@@ -18,7 +18,7 @@ import (
 )
 
 type Config struct {
-	HttpPort         uint          `envconfig:"HTTP_PORT" default:"8000"`
+	HTTPPort         uint          `envconfig:"HTTP_PORT" default:"8000"`
 	NatsURL          string        `envconfig:"NATS_URL" default:"nats://localhost:4222"`
 	WebsocketTimeout time.Duration `envconfig:"WEBSOCKET_TIMEOUT" default:"15m"`
 	LoggingLevel     string        `envconfig:"LOGGING_LEVEL" default:"info"`
@@ -169,7 +169,7 @@ func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 			// Send the received message to the corresponding websocket client
 			errNew := wsb.WriteServerMessage(ws.OpText, m.Data)
 			if errNew != nil {
-				log.Errorf("Failed to write to Websocket", errNew)
+				log.Errorf("Failed to write to Websocket: %s", errNew)
 				closeChan <- struct{}{}
 				return
 			}
@@ -273,7 +273,7 @@ func main() {
 	r.HandleFunc("/publish", h.PublishHandler)
 
 	err = http.ListenAndServe(
-		fmt.Sprintf(":%d", config.HttpPort), handlers.LoggingHandler(os.Stdout, r),
+		fmt.Sprintf(":%d", config.HTTPPort), handlers.LoggingHandler(os.Stdout, r),
 	)
 	if err != nil {
 		log.Fatalf("Error starting HTTP server: %s", err)
