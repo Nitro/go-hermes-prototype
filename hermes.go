@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -29,11 +30,16 @@ type natsSubscription struct {
 }
 
 type NatsBridge interface {
+	Publish(subj string, data []byte) error
 	Subscribe(subj string, cb nats.MsgHandler) (Subscription, error)
 }
 
 type natsConn struct {
 	*nats.Conn
+}
+
+func (nc *natsConn) Publish(subj string, data []byte) error {
+	return nc.Conn.Publish(subj, data)
 }
 
 func (nc *natsConn) Subscribe(subj string, cb nats.MsgHandler) (Subscription, error) {
@@ -191,6 +197,34 @@ func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+func (h *Hermes) publishHandler(w http.ResponseWriter, r *http.Request) {
+	subj := r.FormValue("subj")
+	if subj == "" {
+		msg := "Publish requires a subject query parameter"
+		log.Error(msg)
+		http.Error(w, msg, 400)
+		return
+	}
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		msg := "Publish requires a message payload"
+		log.Error(msg)
+		http.Error(w, msg, 400)
+		return
+	}
+
+	log.Debugf("Received message body: %s", string(body))
+
+	err = h.nats.Publish(subj, body)
+	if err != nil {
+		msg := "Failed to publish message to NATS server"
+		log.Error(msg)
+		http.Error(w, msg, 500)
+		return
+	}
+}
+
 func NewHermes() *Hermes {
 	return &Hermes{}
 }
@@ -211,7 +245,7 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/subscribe", h.subscribeHandler)
-	//http.Handle("/push", os.Stdout, h.pushHandler)
+	r.HandleFunc("/publish", h.publishHandler)
 
 	err = http.ListenAndServe(
 		fmt.Sprintf(":8080"), handlers.LoggingHandler(os.Stdout, r),
