@@ -130,7 +130,7 @@ func (h *Hermes) ConnectToNatsServer(natsURL string) error {
 	return nil
 }
 
-func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 	wsb := NewWSBridge()
 
 	// Upgrade HTTP connection to Websocket
@@ -201,7 +201,7 @@ func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (h *Hermes) publishHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Hermes) PublishHandler(w http.ResponseWriter, r *http.Request) {
 	subj := r.FormValue("subj")
 	if len(subj) == 0 {
 		msg := "Publish requires a subject query parameter"
@@ -269,8 +269,8 @@ func main() {
 	http.HandleFunc("/favicon.ico", http.NotFound)
 
 	r := mux.NewRouter()
-	r.HandleFunc("/subscribe", h.subscribeHandler)
-	r.HandleFunc("/publish", h.publishHandler)
+	r.HandleFunc("/subscribe", h.SubscribeHandler)
+	r.HandleFunc("/publish", h.PublishHandler)
 
 	err = http.ListenAndServe(
 		fmt.Sprintf(":%d", config.HttpPort), handlers.LoggingHandler(os.Stdout, r),
