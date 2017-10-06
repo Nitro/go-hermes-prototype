@@ -4,9 +4,20 @@
 ## Purpose
 Hermes is an asynchronous pub-sub messaging system that uses the Websocket protocol to talk to its HTTP clients. It's meant to be used as a lightweight self-hosted replacement for Pusher.
 
+## Configuration
+
+The following environment variables are recognised by the Go application:
+
+Variable                 | Mandatory | Default
+-------------------------| --------- | -------------------
+HERMES_HTTP_PORT         | no        | 8000
+HERMES_NATS_URL          | no        | nats://localhost:4222
+HERMES_WEBSOCKET_TIMEOUT | no        | 15m
+HERMES_LOGGING_LEVEL     | no        | info
+
 ## Dependencies
-- Websockets: https://github.com/gobwas/ws
-- NATS client: https://github.com/nats-io/go-nats
+- Websockets:       https://github.com/gobwas/ws
+- NATS client:      https://github.com/nats-io/go-nats
 
 ## Design
 A NATS server has to run first for Hermes to work. Hermes uses NATS to handle the pub-sub functionality.
