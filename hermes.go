@@ -18,7 +18,7 @@ import (
 
 const (
 	natsURL       = "nats://localhost:4222"
-	idleWSTimeout = time.Second * 15
+	idleWSTimeout = time.Minute * 3
 )
 
 type Subscription interface {
