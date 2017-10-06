@@ -1,4 +1,5 @@
-# hermes
+# Hermes
+![Hermes](resources/hermes.svg)
 
 ## Purpose
 Hermes is an asynchronous pub-sub messaging system that uses websocket protocol to talk to its clients. It's meant to be a replacement for Pusher currently in use in Cloud infastructure
@@ -7,7 +8,7 @@ Hermes is an asynchronous pub-sub messaging system that uses websocket protocol 
 Websockets: https://github.com/gobwas/ws
 NATS: https://github.com/nats-io/go-nats
 
-# Design
+## Design
 
 NATS is used for flexible pub-sub functionality. A NATS server has to run first for Hermes to work
 
