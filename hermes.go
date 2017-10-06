@@ -8,13 +8,13 @@ import (
 	"os"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/kelseyhightower/envconfig"
 	nats "github.com/nats-io/go-nats"
+	log "github.com/sirupsen/logrus"
 )
 
 type Config struct {
