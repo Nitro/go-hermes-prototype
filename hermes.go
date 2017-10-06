@@ -1,14 +1,17 @@
 package main
 
 import (
-	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
 	nats "github.com/nats-io/go-nats"
 )
 
@@ -26,7 +29,7 @@ type natsSubscription struct {
 }
 
 type NatsBridge interface {
-	Subscribe(string, nats.MsgHandler) (Subscription, error)
+	Subscribe(subj string, cb nats.MsgHandler) (Subscription, error)
 }
 
 type natsConn struct {
@@ -47,9 +50,11 @@ func NewNatsConn(nc *nats.Conn) NatsBridge {
 }
 
 type WSBridge interface {
-	UpgradeHTTP(*http.Request, http.ResponseWriter) error
+	UpgradeHTTP(r *http.Request, w http.ResponseWriter) error
 	ReadClientData() ([]byte, ws.OpCode, error)
-	WriteServerMessage(ws.OpCode, []byte) error
+	WriteServerMessage(op ws.OpCode, p []byte) error
+	WriteFrame(code ws.StatusCode, reason string) error
+	WriteError(msg string)
 	Close() error
 }
 
@@ -76,6 +81,22 @@ func (wsc *wsConn) WriteServerMessage(op ws.OpCode, p []byte) error {
 	return wsutil.WriteServerMessage(wsc.Conn, op, p)
 }
 
+func (wsc *wsConn) WriteFrame(code ws.StatusCode, reason string) error {
+	return ws.WriteFrame(wsc.Conn, ws.NewCloseFrame(code, reason))
+}
+
+func (wsc *wsConn) WriteError(msg string) {
+	log.Errorf(msg)
+	err := wsc.WriteFrame(ws.StatusProtocolError, msg)
+	if err != nil {
+		log.Debugf("Failed to write to Websocket: %s", err)
+	}
+	err = wsc.Close()
+	if err != nil {
+		log.Debugf("Failed to close Websocket: %s", err)
+	}
+}
+
 func (wsc *wsConn) Close() error {
 	return wsc.Conn.Close()
 }
@@ -86,7 +107,6 @@ func NewWSBridge() WSBridge {
 
 type Hermes struct {
 	nats NatsBridge
-	ws   WSBridge
 }
 
 func (h *Hermes) ConnectToNatsServer(natsURL string) error {
@@ -100,86 +120,79 @@ func (h *Hermes) ConnectToNatsServer(natsURL string) error {
 	return nil
 }
 
-func (h *Hermes) Run() error {
-	if h.nats == nil {
-		return errors.New("NATS server not connected")
+func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
+	wsb := NewWSBridge()
+
+	// Upgrade HTTP connection to Websocket
+	err := wsb.UpgradeHTTP(r, w)
+	if err != nil {
+		log.Errorf("Failed to upgrade HTTP connection to Websocket: %s", err)
+		return
 	}
 
-	// Open websocket server
-	return http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		err := h.ws.UpgradeHTTP(r, w)
+	log.Debug("Upgraded HTTP connection to Websocket")
+
+	go func() {
+		// Read client channel name from the Websocket
+		// TODO: implement authentication
+		msg, op, err := wsb.ReadClientData()
 		if err != nil {
-			log.Errorf("Failed to upgrade HTTP connectionto websocket: %s", err)
+			wsb.WriteError(fmt.Sprintf("Failed read channel: %s", err))
+			return
+		}
+		if op != ws.OpText {
+			wsb.WriteError(fmt.Sprintf("Unexpected OP code received: %d", op))
 			return
 		}
 
-		log.Debug("Upgraded HTTP connection to websocket")
+		subj := string(msg)
+		log.Debugf("Received channel subscription request: %s", subj)
 
+		closeChan := make(chan struct{})
+		timer := time.NewTimer(idleWSTimeout)
+
+		// The NATS client interleaves subscriptions to the server over one connection,
+		// so we create a subscription with a unique subject for each opened websocket
+		subscr, err := h.nats.Subscribe(subj, func(m *nats.Msg) {
+			log.Debugf("Received message '%s' from NATS on subject '%s'", string(m.Data), subj)
+
+			// Send the received message to the corresponding websocket client
+			errNew := wsb.WriteServerMessage(ws.OpText, m.Data)
+			if errNew != nil {
+				log.Errorf("failed to write to Websocket", errNew)
+				closeChan <- struct{}{}
+				return
+			}
+
+			timer.Reset(idleWSTimeout)
+		})
+		if err != nil {
+			wsb.WriteError(fmt.Sprintf("failed NATS subscription on subject '%s': %s", subj, err))
+			return
+		}
+
+		// Async unsubscribe from NATS server and close Websocket
 		go func() {
-			// Read client channel name from the websocket
-			// TODO: implement authentication
-			msg, op, err := h.ws.ReadClientData()
+			select {
+			case <-timer.C:
+				log.Debugf("Websocket timeout, removing subscription on subject: %s", subj)
+			case <-closeChan:
+				log.Debugf("Websocket closed, removing subscription on subject: %s", subj)
+			}
+			err := subscr.Unsubscribe()
 			if err != nil {
-				log.Errorf("Failed read channel: %s", err)
-				return
+				log.Errorf("Failed to unsubscribe from subject '%s': %s", subj, err)
 			}
-			if op != ws.OpText {
-				log.Errorf("Unexpected OP code received: %d", op)
-				err = h.ws.Close()
-				if err != nil {
-					log.Debugf("Failed to close websocket: %s", err)
-				}
-				return
-			}
-
-			subj := string(msg)
-			log.Debugf("Received channel subscription request: %s", subj)
-
-			closeChan := make(chan struct{})
-			timer := time.NewTimer(idleWSTimeout)
-
-			// The NATS client interleaves subscriptions to the server over one connection,
-			// so we create a subscription with a unique subject for each opened websocket
-			subscr, err := h.nats.Subscribe(subj, func(m *nats.Msg) {
-				log.Debugf("Received message '%s' from NATS on subject '%s'", string(m.Data), subj)
-				// Send the received message to the corresponding websocket client
-				errNew := h.ws.WriteServerMessage(ws.OpText, m.Data)
-				if errNew != nil {
-					log.Errorf("failed Write to websocket", errNew)
-					closeChan <- struct{}{}
-					return
-				}
-
-				timer.Reset(idleWSTimeout)
-			})
+			err = wsb.Close()
 			if err != nil {
-				log.Errorf("failed NATS subscription on subject '%s': %s", subj, err)
-				return
+				log.Errorf("Failed to close Websocket: %s", err)
 			}
-
-			// Async unsubscribe from NATS server and close websocket
-			go func() {
-				select {
-				case <-timer.C:
-					log.Debugf("Websocket timeout, removing subscription on subject: %s", subj)
-				case <-closeChan:
-					log.Debugf("Websocket closed, removing subscription on subject: %s", subj)
-				}
-				err := subscr.Unsubscribe()
-				if err != nil {
-					log.Errorf("Failed to unsubscribe from subject '%s': %s", subj, err)
-				}
-				err = h.ws.Close()
-				if err != nil {
-					log.Errorf("Failed to close websocket: %s", err)
-				}
-			}()
 		}()
-	}))
+	}()
 }
 
 func NewHermes() *Hermes {
-	return &Hermes{ws: NewWSBridge()}
+	return &Hermes{}
 }
 
 func main() {
@@ -194,8 +207,16 @@ func main() {
 	}
 	log.Infof("Connected to NATS server '%s'", natsURL)
 
-	err = h.Run()
+	http.HandleFunc("/favicon.ico", http.NotFound)
+
+	r := mux.NewRouter()
+	r.HandleFunc("/subscribe", h.subscribeHandler)
+	//http.Handle("/push", os.Stdout, h.pushHandler)
+
+	err = http.ListenAndServe(
+		fmt.Sprintf(":8080"), handlers.LoggingHandler(os.Stdout, r),
+	)
 	if err != nil {
-		log.Fatalf("Error starting Hermes server: %s", err)
+		log.Fatalf("Error starting HTTP server: %s", err)
 	}
 }
