@@ -13,13 +13,16 @@ import (
 	"github.com/gobwas/ws/wsutil"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/kelseyhightower/envconfig"
 	nats "github.com/nats-io/go-nats"
 )
 
-const (
-	natsURL       = "nats://localhost:4222"
-	idleWSTimeout = time.Minute * 3
-)
+type Config struct {
+	HttpPort         uint          `envconfig:"HTTP_PORT" default:"8000"`
+	NatsURL          string        `envconfig:"NATS_URL" default:"nats://localhost:4222"`
+	WebsocketTimeout time.Duration `envconfig:"WEBSOCKET_TIMEOUT" default:"15m"`
+	LoggingLevel     string        `envconfig:"LOGGING_LEVEL" default:"info"`
+}
 
 type Subscription interface {
 	Unsubscribe() error
@@ -112,7 +115,8 @@ func NewWSBridge() WSBridge {
 }
 
 type Hermes struct {
-	nats NatsBridge
+	nats             NatsBridge
+	websocketTimeout time.Duration
 }
 
 func (h *Hermes) ConnectToNatsServer(natsURL string) error {
@@ -155,7 +159,7 @@ func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 		log.Debugf("Received channel subscription request: %s", subj)
 
 		closeChan := make(chan struct{})
-		timer := time.NewTimer(idleWSTimeout)
+		timer := time.NewTimer(h.websocketTimeout)
 
 		// The NATS client interleaves subscriptions to the server over one connection,
 		// so we create a subscription with a unique subject for each opened websocket
@@ -170,7 +174,7 @@ func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			timer.Reset(idleWSTimeout)
+			timer.Reset(h.websocketTimeout)
 		})
 		if err != nil {
 			wsb.WriteError(fmt.Sprintf("failed NATS subscription on subject '%s': %s", subj, err))
@@ -199,7 +203,7 @@ func (h *Hermes) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 
 func (h *Hermes) publishHandler(w http.ResponseWriter, r *http.Request) {
 	subj := r.FormValue("subj")
-	if subj == "" {
+	if len(subj) == 0 {
 		msg := "Publish requires a subject query parameter"
 		log.Error(msg)
 		http.Error(w, msg, 400)
@@ -225,21 +229,42 @@ func (h *Hermes) publishHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func NewHermes() *Hermes {
-	return &Hermes{}
+func NewHermes(wsTimeout time.Duration) *Hermes {
+	return &Hermes{websocketTimeout: wsTimeout}
+}
+
+func configureLoggingLevel(level string) {
+	switch {
+	case level == "info":
+		log.SetLevel(log.InfoLevel)
+	case level == "warn":
+		log.SetLevel(log.WarnLevel)
+	case level == "error":
+		log.SetLevel(log.ErrorLevel)
+	case level == "debug":
+		log.SetLevel(log.DebugLevel)
+	default:
+		log.SetLevel(log.InfoLevel)
+	}
 }
 
 func main() {
-	log.SetLevel(log.DebugLevel)
+	var config Config
+	err := envconfig.Process("hermes", &config)
+	if err != nil {
+		log.Fatalf("Failed to parse the configuration parameters: %s", err)
+	}
 
-	h := NewHermes()
+	configureLoggingLevel(config.LoggingLevel)
+
+	h := NewHermes(config.WebsocketTimeout)
 
 	// Open NATS connection
-	err := h.ConnectToNatsServer(natsURL)
+	err = h.ConnectToNatsServer(config.NatsURL)
 	if err != nil {
 		log.Fatalf("Error connecting to NATS server: %s", err)
 	}
-	log.Infof("Connected to NATS server '%s'", natsURL)
+	log.Infof("Connected to NATS server '%s'", config.NatsURL)
 
 	http.HandleFunc("/favicon.ico", http.NotFound)
 
@@ -248,7 +273,7 @@ func main() {
 	r.HandleFunc("/publish", h.publishHandler)
 
 	err = http.ListenAndServe(
-		fmt.Sprintf(":8080"), handlers.LoggingHandler(os.Stdout, r),
+		fmt.Sprintf(":%d", config.HttpPort), handlers.LoggingHandler(os.Stdout, r),
 	)
 	if err != nil {
 		log.Fatalf("Error starting HTTP server: %s", err)
