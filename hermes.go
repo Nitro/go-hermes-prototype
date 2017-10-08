@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/kelseyhightower/envconfig"
 	nats "github.com/nats-io/go-nats"
+	"github.com/relistan/rubberneck"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -254,6 +255,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to parse the configuration parameters: %s", err)
 	}
+
+	rubberneck.Print(config)
 
 	configureLoggingLevel(config.LoggingLevel)
 
