@@ -117,6 +117,7 @@ func NewWSBridge() WSBridge {
 
 type Hermes struct {
 	nats             NatsBridge
+	wsGenerator      func() WSBridge
 	websocketTimeout time.Duration
 }
 
@@ -132,12 +133,14 @@ func (h *Hermes) ConnectToNatsServer(natsURL string) error {
 }
 
 func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
-	wsb := NewWSBridge()
+	wsb := h.wsGenerator()
 
 	// Upgrade HTTP connection to Websocket
 	err := wsb.UpgradeHTTP(r, w)
 	if err != nil {
-		log.Errorf("Failed to upgrade HTTP connection to Websocket: %s", err)
+		msg := fmt.Sprintf("Failed to upgrade HTTP connection to Websocket: %s", err)
+		log.Error(msg)
+		http.Error(w, msg, 400)
 		return
 	}
 
@@ -163,7 +166,8 @@ func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 		timer := time.NewTimer(h.websocketTimeout)
 
 		// The NATS client interleaves subscriptions to the server over one connection,
-		// so we create a subscription with a unique subject for each opened websocket
+		// so we create a subscription with a unique subject for each opened websocket.
+		// If Hermes dies, the NATS server will automatically drop the initiated subscriptions
 		subscr, err := h.nats.Subscribe(subj, func(m *nats.Msg) {
 			log.Debugf("Received message '%s' from NATS on subject '%s'", string(m.Data), subj)
 
@@ -231,7 +235,10 @@ func (h *Hermes) PublishHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewHermes(wsTimeout time.Duration) *Hermes {
-	return &Hermes{websocketTimeout: wsTimeout}
+	return &Hermes{
+		wsGenerator:      NewWSBridge,
+		websocketTimeout: wsTimeout,
+	}
 }
 
 func configureLoggingLevel(level string) {
