@@ -5,6 +5,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,11 +22,23 @@ func (s *dummyNatsSubscription) Unsubscribe() error {
 	return nil
 }
 
+type publishData struct {
+	subj string
+	data []byte
+}
+
 type dummyNatsConn struct {
+	pubData      publishData
 	errSubscribe error
+	errPublish   error
 }
 
 func (nc *dummyNatsConn) Publish(subj string, data []byte) error {
+	if nc.errPublish != nil {
+		return nc.errPublish
+	}
+
+	nc.pubData = publishData{subj: subj, data: data}
 	return nil
 }
 
@@ -180,4 +194,71 @@ func Test_Subscribe(t *testing.T) {
 }
 
 func Test_Publish(t *testing.T) {
+	Convey("Publish", t, func() {
+		nc := &dummyNatsConn{}
+		h := &Hermes{
+			nats: nc,
+		}
+
+		dummyMessage := `{"documentId":"42684447", "documentVersionId":"42684483", "errorCode":"0"}`
+
+		req := httptest.NewRequest("POST", "http://localhost/subscribe", strings.NewReader(dummyMessage))
+		respRec := httptest.NewRecorder()
+
+		Convey("runs successfully and publishes data", func() {
+			dummySubj := "test_subj"
+			form := url.Values{"subj": []string{dummySubj}}
+			req.URL.RawQuery = form.Encode()
+
+			h.PublishHandler(respRec, req)
+
+			resp := respRec.Result()
+			So(resp.StatusCode, ShouldEqual, 200)
+			So(string(nc.pubData.subj), ShouldEqual, dummySubj)
+			So(string(nc.pubData.data), ShouldEqual, dummyMessage)
+		})
+
+		Convey("returns an error if the subject is missing", func() {
+			h.PublishHandler(respRec, req)
+
+			resp := respRec.Result()
+			So(resp.StatusCode, ShouldEqual, 400)
+
+			bodyBytes, err := ioutil.ReadAll(resp.Body)
+			So(err, ShouldBeNil)
+			So(string(bodyBytes), ShouldContainSubstring, "Publish requires a subject query parameter")
+		})
+
+		Convey("returns an error if the message payload is empty", func() {
+			req := httptest.NewRequest("POST", "http://localhost/subscribe", nil)
+			form := url.Values{"subj": []string{"test_subj"}}
+			req.URL.RawQuery = form.Encode()
+
+			h.PublishHandler(respRec, req)
+
+			resp := respRec.Result()
+			So(resp.StatusCode, ShouldEqual, 400)
+
+			bodyBytes, err := ioutil.ReadAll(resp.Body)
+			So(err, ShouldBeNil)
+			So(string(bodyBytes), ShouldContainSubstring, "Publish requires a message payload")
+		})
+
+		Convey("returns an error if it fails to publish the message to NATS", func() {
+			form := url.Values{"subj": []string{"test_subj"}}
+			req.URL.RawQuery = form.Encode()
+
+			dummyError := errors.New("some error")
+			nc.errPublish = dummyError
+
+			h.PublishHandler(respRec, req)
+
+			resp := respRec.Result()
+			So(resp.StatusCode, ShouldEqual, 500)
+
+			bodyBytes, err := ioutil.ReadAll(resp.Body)
+			So(err, ShouldBeNil)
+			So(string(bodyBytes), ShouldContainSubstring, dummyError.Error())
+		})
+	})
 }
