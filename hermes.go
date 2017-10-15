@@ -231,7 +231,7 @@ func (h *Hermes) PublishHandler(w http.ResponseWriter, r *http.Request) {
 
 	err = h.nats.Publish(subj, body)
 	if err != nil {
-		msg := "Failed to publish message to NATS server"
+		msg := fmt.Sprintf("Failed to publish message to NATS server: %s", err)
 		log.Error(msg)
 		http.Error(w, msg, 500)
 		return
