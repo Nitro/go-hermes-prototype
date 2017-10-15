@@ -220,7 +220,7 @@ func (h *Hermes) PublishHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
+	if err != nil || len(body) == 0 {
 		msg := "Publish requires a message payload"
 		log.Error(msg)
 		http.Error(w, msg, 400)
