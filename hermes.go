@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/kelseyhightower/envconfig"
-	nats "github.com/nats-io/go-nats"
+	"github.com/nats-io/go-nats"
 	"github.com/relistan/rubberneck"
 	log "github.com/sirupsen/logrus"
 )
@@ -117,6 +117,7 @@ func NewWSBridge() WSBridge {
 
 type Hermes struct {
 	nats             NatsBridge
+	wsGenerator      func() WSBridge
 	websocketTimeout time.Duration
 }
 
@@ -132,12 +133,14 @@ func (h *Hermes) ConnectToNatsServer(natsURL string) error {
 }
 
 func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
-	wsb := NewWSBridge()
+	wsb := h.wsGenerator()
 
 	// Upgrade HTTP connection to Websocket
 	err := wsb.UpgradeHTTP(r, w)
 	if err != nil {
-		log.Errorf("Failed to upgrade HTTP connection to Websocket: %s", err)
+		msg := fmt.Sprintf("Failed to upgrade HTTP connection to Websocket: %s", err)
+		log.Error(msg)
+		http.Error(w, msg, 400)
 		return
 	}
 
@@ -148,7 +151,7 @@ func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 		// TODO: implement authentication
 		msg, op, err := wsb.ReadClientData()
 		if err != nil {
-			wsb.WriteError(fmt.Sprintf("Failed read channel: %s", err))
+			wsb.WriteError(fmt.Sprintf("Failed to read client data: %s", err))
 			return
 		}
 		if op != ws.OpText {
@@ -162,9 +165,32 @@ func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 		closeChan := make(chan struct{})
 		timer := time.NewTimer(h.websocketTimeout)
 
+		// Async unsubscribe from NATS server and close Websocket
+		var subscr Subscription
+		go func() {
+			select {
+			case <-timer.C:
+				log.Debugf("Websocket timeout, removing subscription on subject: %s", subj)
+			case <-closeChan:
+				log.Debugf("Websocket closed, removing subscription on subject: %s", subj)
+			}
+
+			if subscr != nil {
+				err := subscr.Unsubscribe()
+				if err != nil {
+					log.Errorf("Failed to unsubscribe from subject '%s': %s", subj, err)
+				}
+			}
+			err = wsb.Close()
+			if err != nil {
+				log.Errorf("Failed to close Websocket: %s", err)
+			}
+		}()
+
 		// The NATS client interleaves subscriptions to the server over one connection,
-		// so we create a subscription with a unique subject for each opened websocket
-		subscr, err := h.nats.Subscribe(subj, func(m *nats.Msg) {
+		// so we create a subscription with a unique subject for each opened websocket.
+		// If Hermes dies, the NATS server will automatically drop the initiated subscriptions
+		subscr, err = h.nats.Subscribe(subj, func(m *nats.Msg) {
 			log.Debugf("Received message '%s' from NATS on subject '%s'", string(m.Data), subj)
 
 			// Send the received message to the corresponding websocket client
@@ -181,24 +207,6 @@ func (h *Hermes) SubscribeHandler(w http.ResponseWriter, r *http.Request) {
 			wsb.WriteError(fmt.Sprintf("Failed NATS subscription on subject '%s': %s", subj, err))
 			return
 		}
-
-		// Async unsubscribe from NATS server and close Websocket
-		go func() {
-			select {
-			case <-timer.C:
-				log.Debugf("Websocket timeout, removing subscription on subject: %s", subj)
-			case <-closeChan:
-				log.Debugf("Websocket closed, removing subscription on subject: %s", subj)
-			}
-			err := subscr.Unsubscribe()
-			if err != nil {
-				log.Errorf("Failed to unsubscribe from subject '%s': %s", subj, err)
-			}
-			err = wsb.Close()
-			if err != nil {
-				log.Errorf("Failed to close Websocket: %s", err)
-			}
-		}()
 	}()
 }
 
@@ -212,7 +220,7 @@ func (h *Hermes) PublishHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
+	if err != nil || len(body) == 0 {
 		msg := "Publish requires a message payload"
 		log.Error(msg)
 		http.Error(w, msg, 400)
@@ -223,7 +231,7 @@ func (h *Hermes) PublishHandler(w http.ResponseWriter, r *http.Request) {
 
 	err = h.nats.Publish(subj, body)
 	if err != nil {
-		msg := "Failed to publish message to NATS server"
+		msg := fmt.Sprintf("Failed to publish message to NATS server: %s", err)
 		log.Error(msg)
 		http.Error(w, msg, 500)
 		return
@@ -231,7 +239,10 @@ func (h *Hermes) PublishHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewHermes(wsTimeout time.Duration) *Hermes {
-	return &Hermes{websocketTimeout: wsTimeout}
+	return &Hermes{
+		wsGenerator:      NewWSBridge,
+		websocketTimeout: wsTimeout,
+	}
 }
 
 func configureLoggingLevel(level string) {
